@@ -1,0 +1,131 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {uid}
+    // Fields:
+    //   - uid: string (required)
+    //   - name: string (required)
+    //   - email: string (required)
+    //   - role: string (required, enum: ['student', 'teacher', 'admin'])
+    //   - classId: string (optional, for students)
+    //   - subjectIds: list (optional, for teachers)
+    //
+    // Collection: classes
+    // Document ID: {classId}
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required)
+    //
+    // Collection: subjects
+    // Document ID: {subjectId}
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required)
+    //   - code: string (required)
+    //
+    // Collection: schedules
+    // Document ID: {scheduleId}
+    // Fields:
+    //   - id: string (required)
+    //   - classId: string (required)
+    //   - subjectId: string (required)
+    //   - day: string (required)
+    //   - startTime: string (required)
+    //   - endTime: string (required)
+    //   - room: string (optional)
+    //
+    // Collection: attendance
+    // Document ID: {attendanceId}
+    // Fields:
+    //   - id: string (required)
+    //   - studentId: string (required)
+    //   - classId: string (required)
+    //   - subjectId: string (required)
+    //   - date: string (required, YYYY-MM-DD)
+    //   - status: string (required, enum: ['present', 'absent'])
+    //   - timestamp: timestamp (required)
+    //   - method: string (required, enum: ['qr', 'manual'])
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (getUserData().role == 'admin' || 
+         (request.auth.token.email == "shahira.ciydsh@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isTeacher() {
+      return isAuthenticated() && getUserData().role == 'teacher';
+    }
+
+    function isStudent() {
+      return isAuthenticated() && getUserData().role == 'student';
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && (isAdmin() || isOwner(userId)) && 
+        hasOnlyAllowedFields(['uid', 'name', 'email', 'role', 'classId', 'subjectIds']) &&
+        request.resource.data.role in ['student', 'teacher', 'admin'] &&
+        (isAdmin() || request.resource.data.role != 'admin'); // Non-admins can't create admins
+      allow update: if isAuthenticated() && (isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role));
+      allow delete: if isAdmin();
+    }
+
+    match /classes/{classId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /subjects/{subjectId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /schedules/{scheduleId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /attendance/{attendanceId} {
+      allow read: if isAuthenticated() && (isAdmin() || isTeacher() || (isStudent() && request.auth.uid == resource.data.studentId));
+      allow create: if isAuthenticated() && (isAdmin() || isTeacher() || (isStudent() && request.auth.uid == request.resource.data.studentId));
+      allow update: if isAuthenticated() && (isAdmin() || isTeacher());
+      allow delete: if isAdmin();
+    }
+  }
+}

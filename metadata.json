@@ -1,0 +1,5 @@
+{
+  "name": "EduAttend",
+  "description": "A comprehensive attendance management system with QR code check-ins and role-based dashboards for students, teachers, and admins.",
+  "requestFramePermissions": ["camera"]
+}

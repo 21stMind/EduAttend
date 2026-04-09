@@ -1,0 +1,77 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "System user with role-based access",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["student", "teacher", "admin"] },
+        "classId": { "type": "string", "description": "For students: the class they belong to" },
+        "subjectIds": { "type": "array", "description": "For teachers: list of subjects they teach" }
+      },
+      "required": ["uid", "name", "email", "role"]
+    },
+    "Class": {
+      "title": "Class",
+      "description": "A group of students (e.g., Grade 10-A)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "Subject": {
+      "title": "Subject",
+      "description": "Academic subject",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "code": { "type": "string" }
+      },
+      "required": ["id", "name", "code"]
+    },
+    "Schedule": {
+      "title": "Schedule",
+      "description": "Class schedule entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "classId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "day": { "type": "string", "enum": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "room": { "type": "string" }
+      },
+      "required": ["id", "classId", "subjectId", "day", "startTime", "endTime"]
+    },
+    "Attendance": {
+      "title": "Attendance",
+      "description": "Attendance record for a student",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentId": { "type": "string" },
+        "classId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "status": { "type": "string", "enum": ["present", "absent"] },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "method": { "type": "string", "enum": ["qr", "manual"] }
+      },
+      "required": ["id", "studentId", "classId", "subjectId", "date", "status", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": { "schema": "User", "description": "User profiles" },
+    "/classes/{classId}": { "schema": "Class", "description": "Class definitions" },
+    "/subjects/{subjectId}": { "schema": "Subject", "description": "Subject definitions" },
+    "/schedules/{scheduleId}": { "schema": "Schedule", "description": "Class schedules" },
+    "/attendance/{attendanceId}": { "schema": "Attendance", "description": "Attendance records" }
+  }
+}
