@@ -123,25 +123,25 @@ const LoadingScreen = () => (
 );
 
 const Login = () => {
+  const [selectedRole, setSelectedRole] = useState<UserRole>('student');
+
   const handleLogin = async () => {
     const provider = new GoogleAuthProvider();
     try {
       const result = await signInWithPopup(auth, provider);
       const user = result.user;
       
-      // Check if user exists in Firestore
       const userRef = doc(db, 'users', user.uid);
-      const userSnap = await getDoc(userRef);
       
-      if (!userSnap.exists()) {
-        // Default to student if new user (Admin can change later)
-        await setDoc(userRef, {
-          uid: user.uid,
-          name: user.displayName || 'New User',
-          email: user.email,
-          role: 'student'
-        });
-      }
+      // For testing purposes, we'll update the role to the selected one on every login
+      // Note: In a production app, roles should be managed by admins only.
+      await setDoc(userRef, {
+        uid: user.uid,
+        name: user.displayName || 'User',
+        email: user.email,
+        role: selectedRole
+      }, { merge: true });
+      
     } catch (error) {
       console.error('Login error:', error);
     }
@@ -160,13 +160,37 @@ const Login = () => {
         <h1 className="text-3xl font-bold text-slate-900 mb-2">EduAttend</h1>
         <p className="text-slate-500 mb-8">Smart attendance management for modern schools</p>
         
+        <div className="space-y-4 mb-8">
+          <p className="text-sm font-bold text-slate-400 uppercase tracking-wider">Select Testing Role</p>
+          <div className="grid grid-cols-3 gap-2">
+            {(['student', 'teacher', 'admin'] as const).map((role) => (
+              <button
+                key={role}
+                onClick={() => setSelectedRole(role)}
+                className={cn(
+                  "py-2 px-3 rounded-xl text-xs font-bold capitalize border-2 transition-all",
+                  selectedRole === role 
+                    ? "bg-blue-50 border-blue-600 text-blue-600" 
+                    : "bg-white border-slate-100 text-slate-400 hover:border-slate-200"
+                )}
+              >
+                {role}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <button
           onClick={handleLogin}
-          className="w-full flex items-center justify-center gap-3 bg-white border border-slate-200 text-slate-700 font-semibold py-3 px-4 rounded-xl hover:bg-slate-50 transition-colors shadow-sm"
+          className="w-full flex items-center justify-center gap-3 bg-blue-600 text-white font-bold py-4 px-4 rounded-xl hover:bg-blue-700 transition-all shadow-lg shadow-blue-100"
         >
-          <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
-          Continue with Google
+          <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5 brightness-0 invert" />
+          Login as {selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)}
         </button>
+        
+        <p className="mt-6 text-xs text-slate-400">
+          Role selection is enabled for testing purposes.
+        </p>
       </motion.div>
     </div>
   );
