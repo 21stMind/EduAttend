@@ -67,21 +67,25 @@ service cloud.firestore {
     }
 
     function getUserData() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      let path = /databases/$(database)/documents/users/$(request.auth.uid);
+      return exists(path) ? get(path).data : null;
     }
 
     function isAdmin() {
+      let data = getUserData();
       return isAuthenticated() && 
-        (getUserData().role == 'admin' || 
+        ((data != null && data.role == 'admin') || 
          (request.auth.token.email == "shahira.ciydsh@gmail.com" && request.auth.token.email_verified == true));
     }
 
     function isTeacher() {
-      return isAuthenticated() && getUserData().role == 'teacher';
+      let data = getUserData();
+      return isAuthenticated() && data != null && data.role == 'teacher';
     }
 
     function isStudent() {
-      return isAuthenticated() && getUserData().role == 'student';
+      let data = getUserData();
+      return isAuthenticated() && data != null && data.role == 'student';
     }
 
     function isValidEmail(email) {
@@ -97,11 +101,12 @@ service cloud.firestore {
     // ===============================================================
 
     match /users/{userId} {
-      allow read: if isAuthenticated();
+      // Allow users to read their own profile, and admins/teachers to read profiles for management
+      allow read: if isAuthenticated() && (isOwner(userId) || isAdmin() || isTeacher());
       allow create: if isAuthenticated() && (isAdmin() || isOwner(userId)) && 
         hasOnlyAllowedFields(['uid', 'name', 'email', 'role', 'classId', 'subjectIds']) &&
         request.resource.data.role in ['student', 'teacher', 'admin'] &&
-        (isAdmin() || request.resource.data.role != 'admin'); // Non-admins can't create admins
+        (isAdmin() || request.resource.data.role != 'admin');
       allow update: if isAuthenticated() && (isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role));
       allow delete: if isAdmin();
     }

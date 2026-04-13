@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import * as React from 'react';
+import { useState, useEffect, useRef, Component, ReactNode, ErrorInfo } from 'react';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -24,7 +25,8 @@ import {
   getDocs,
   orderBy,
   limit,
-  getDocFromServer
+  getDocFromServer,
+  deleteDoc
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
 import { 
@@ -45,7 +47,8 @@ import {
   MapPin,
   Menu,
   X,
-  Camera
+  Camera,
+  Trash2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isSameDay, startOfDay, endOfDay } from 'date-fns';
@@ -112,6 +115,63 @@ interface AttendanceRecord {
 }
 
 // --- Components ---
+
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  public state: ErrorBoundaryState = { hasError: false, error: null };
+
+  constructor(public props: ErrorBoundaryProps) {
+    super(props);
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      let message = "Something went wrong.";
+      try {
+        const errInfo = JSON.parse(this.state.error?.message || "{}");
+        if (errInfo.error) {
+          message = `Permission Error: ${errInfo.error} (Op: ${errInfo.operationType})`;
+        }
+      } catch (e) {
+        message = this.state.error?.message || message;
+      }
+
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-red-50 p-4">
+          <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 text-center border border-red-100">
+            <XCircle className="text-red-500 w-12 h-12 mx-auto mb-4" />
+            <h2 className="text-xl font-bold text-slate-900 mb-2">Application Error</h2>
+            <p className="text-slate-600 mb-6 text-sm">{message}</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="bg-red-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-red-700 transition-all"
+            >
+              Reload App
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 const LoadingScreen = () => (
   <div className="fixed inset-0 flex items-center justify-center bg-slate-50">
@@ -211,12 +271,12 @@ const StudentDashboard = ({ user }: { user: UserProfile }) => {
     const qSchedule = query(collection(db, 'schedules'), where('classId', '==', user.classId));
     const unsubSchedule = onSnapshot(qSchedule, (snap) => {
       setSchedule(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as ScheduleEntry)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'schedules'));
 
     const qAttendance = query(collection(db, 'attendance'), where('studentId', '==', user.uid));
     const unsubAttendance = onSnapshot(qAttendance, (snap) => {
       setAttendance(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as AttendanceRecord)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'attendance'));
 
     const unsubSubjects = onSnapshot(collection(db, 'subjects'), (snap) => {
       const subMap: Record<string, SubjectData> = {};
@@ -224,7 +284,7 @@ const StudentDashboard = ({ user }: { user: UserProfile }) => {
         subMap[doc.id] = doc.data() as SubjectData;
       });
       setSubjects(subMap);
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'subjects'));
 
     return () => {
       unsubSchedule();
@@ -380,12 +440,12 @@ const TeacherDashboard = ({ user }: { user: UserProfile }) => {
   useEffect(() => {
     const unsubClasses = onSnapshot(collection(db, 'classes'), (snap) => {
       setClasses(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as ClassData)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'classes'));
 
     const unsubSubjects = onSnapshot(collection(db, 'subjects'), (snap) => {
       const allSubs = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as SubjectData));
       setSubjects(allSubs.filter(s => user.subjectIds?.includes(s.id)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'subjects'));
 
     return () => {
       unsubClasses();
@@ -398,7 +458,7 @@ const TeacherDashboard = ({ user }: { user: UserProfile }) => {
     const q = query(collection(db, 'users'), where('classId', '==', selectedClass), where('role', '==', 'student'));
     const unsub = onSnapshot(q, (snap) => {
       setStudents(snap.docs.map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'users'));
     return unsub;
   }, [selectedClass]);
 
@@ -413,7 +473,7 @@ const TeacherDashboard = ({ user }: { user: UserProfile }) => {
     );
     const unsub = onSnapshot(q, (snap) => {
       setAttendanceRecords(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as AttendanceRecord)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'attendance'));
     return unsub;
   }, [selectedClass, selectedSubject]);
 
@@ -451,11 +511,44 @@ const TeacherDashboard = ({ user }: { user: UserProfile }) => {
     date: format(new Date(), 'yyyy-MM-dd')
   });
 
+  const [showAddStudent, setShowAddStudent] = useState(false);
+  const [newStudent, setNewStudent] = useState({ name: '', email: '' });
+
+  const handleAddStudent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedClass || !newStudent.name || !newStudent.email) return;
+
+    try {
+      // Create a dummy UID for the manually added student (or use email as ID)
+      const studentId = `manual-${newStudent.email.replace(/[^a-zA-Z0-9]/g, '-')}`;
+      await setDoc(doc(db, 'users', studentId), {
+        uid: studentId,
+        name: newStudent.name,
+        email: newStudent.email,
+        role: 'student',
+        classId: selectedClass
+      });
+      setNewStudent({ name: '', email: '' });
+      setShowAddStudent(false);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'users');
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <h2 className="text-2xl font-bold text-slate-900">Teacher Dashboard</h2>
         <div className="flex gap-2">
+          {selectedClass && (
+            <button 
+              onClick={() => setShowAddStudent(true)}
+              className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-blue-700 transition-all"
+            >
+              <Plus className="w-4 h-4" />
+              Add Student
+            </button>
+          )}
           <select 
             className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-medium"
             value={selectedClass || ''}
@@ -474,6 +567,43 @@ const TeacherDashboard = ({ user }: { user: UserProfile }) => {
           </select>
         </div>
       </div>
+
+      <AnimatePresence>
+        {showAddStudent && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="bg-white rounded-2xl p-6 shadow-lg border border-slate-100"
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-bold text-slate-800">Register New Student</h3>
+              <button onClick={() => setShowAddStudent(false)}><X className="w-5 h-5 text-slate-400" /></button>
+            </div>
+            <form onSubmit={handleAddStudent} className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <input 
+                type="text" 
+                placeholder="Full Name" 
+                className="bg-slate-50 border-none rounded-xl px-4 py-2 text-sm"
+                value={newStudent.name}
+                onChange={e => setNewStudent({...newStudent, name: e.target.value})}
+                required
+              />
+              <input 
+                type="email" 
+                placeholder="Email Address" 
+                className="bg-slate-50 border-none rounded-xl px-4 py-2 text-sm"
+                value={newStudent.email}
+                onChange={e => setNewStudent({...newStudent, email: e.target.value})}
+                required
+              />
+              <button type="submit" className="bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 transition-all">
+                Register Student
+              </button>
+            </form>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {selectedClass && selectedSubject ? (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -600,19 +730,19 @@ const AdminDashboard = () => {
   useEffect(() => {
     const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
       setUsers(snap.docs.map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'users'));
     const unsubClasses = onSnapshot(collection(db, 'classes'), (snap) => {
       setClasses(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as ClassData)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'classes'));
     const unsubSubjects = onSnapshot(collection(db, 'subjects'), (snap) => {
       setSubjects(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as SubjectData)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'subjects'));
     const unsubAttendance = onSnapshot(collection(db, 'attendance'), (snap) => {
       setAttendance(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as AttendanceRecord)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'attendance'));
     const unsubSchedules = onSnapshot(collection(db, 'schedules'), (snap) => {
       setSchedules(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as ScheduleEntry)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'schedules'));
 
     return () => {
       unsubUsers();
@@ -625,6 +755,40 @@ const AdminDashboard = () => {
 
   const handleUpdateUser = async (uid: string, data: Partial<UserProfile>) => {
     await setDoc(doc(db, 'users', uid), data, { merge: true });
+  };
+
+  const handleDeleteUser = async (uid: string) => {
+    if (confirm('Are you sure you want to delete this user?')) {
+      await deleteDoc(doc(db, 'users', uid));
+    }
+  };
+
+  const handleDeleteClass = async (id: string) => {
+    if (confirm('Are you sure you want to delete this class?')) {
+      await deleteDoc(doc(db, 'classes', id));
+    }
+  };
+
+  const handleDeleteSubject = async (id: string) => {
+    if (confirm('Are you sure you want to delete this subject?')) {
+      await deleteDoc(doc(db, 'subjects', id));
+    }
+  };
+
+  const handleDeleteSchedule = async (id: string) => {
+    if (confirm('Are you sure you want to delete this schedule?')) {
+      await deleteDoc(doc(db, 'schedules', id));
+    }
+  };
+
+  const handleAddUser = async () => {
+    const name = prompt('Enter name:');
+    const email = prompt('Enter email:');
+    const role = prompt('Enter role (student/teacher/admin):') as UserRole;
+    if (name && email && role) {
+      const uid = `admin-${Date.now()}`;
+      await setDoc(doc(db, 'users', uid), { uid, name, email, role });
+    }
   };
 
   const handleAddClass = async () => {
@@ -679,19 +843,26 @@ const AdminDashboard = () => {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-slate-900">Admin Panel</h2>
-        <div className="flex bg-slate-100 p-1 rounded-xl overflow-x-auto">
-          {(['users', 'classes', 'subjects', 'schedules', 'reports'] as const).map(tab => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={cn(
-                "px-4 py-2 rounded-lg text-sm font-bold capitalize transition-all whitespace-nowrap",
-                activeTab === tab ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
-              )}
-            >
-              {tab}
+        <div className="flex gap-2">
+          {activeTab === 'users' && (
+            <button onClick={handleAddUser} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2">
+              <Plus className="w-4 h-4" /> Add User
             </button>
-          ))}
+          )}
+          <div className="flex bg-slate-100 p-1 rounded-xl overflow-x-auto">
+            {(['users', 'classes', 'subjects', 'schedules', 'reports'] as const).map(tab => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={cn(
+                  "px-4 py-2 rounded-lg text-sm font-bold capitalize transition-all whitespace-nowrap",
+                  activeTab === tab ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                )}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -756,8 +927,11 @@ const AdminDashboard = () => {
                     ) : '-'}
                   </td>
                   <td className="px-6 py-4 text-right">
-                    <button className="text-slate-400 hover:text-red-500">
-                      <XCircle className="w-5 h-5" />
+                    <button 
+                      onClick={() => handleDeleteUser(u.uid)}
+                      className="text-slate-400 hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 className="w-5 h-5" />
                     </button>
                   </td>
                 </tr>
@@ -775,7 +949,15 @@ const AdminDashboard = () => {
                 <p className="font-bold text-slate-900">{c.name}</p>
                 <p className="text-xs text-slate-500">{users.filter(u => u.classId === c.id).length} Students</p>
               </div>
-              <BookOpen className="text-blue-600 w-6 h-6" />
+              <div className="flex items-center gap-2">
+                <BookOpen className="text-blue-600 w-6 h-6" />
+                <button 
+                  onClick={() => handleDeleteClass(c.id)}
+                  className="p-1 text-slate-300 hover:text-red-500 transition-colors"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           ))}
           <button 
@@ -794,7 +976,15 @@ const AdminDashboard = () => {
             <div key={s.id} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
               <div className="flex items-center justify-between mb-2">
                 <span className="px-2 py-1 bg-blue-100 text-blue-600 rounded text-[10px] font-bold uppercase">{s.code}</span>
-                <FileText className="text-slate-300 w-5 h-5" />
+                <div className="flex items-center gap-2">
+                  <FileText className="text-slate-300 w-5 h-5" />
+                  <button 
+                    onClick={() => handleDeleteSubject(s.id)}
+                    className="p-1 text-slate-300 hover:text-red-500 transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
               <p className="font-bold text-slate-900">{s.name}</p>
             </div>
@@ -828,6 +1018,7 @@ const AdminDashboard = () => {
                   <th className="px-6 py-4">Day</th>
                   <th className="px-6 py-4">Time</th>
                   <th className="px-6 py-4">Room</th>
+                  <th className="px-6 py-4 text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -838,6 +1029,14 @@ const AdminDashboard = () => {
                     <td className="px-6 py-4 text-slate-500">{s.day}</td>
                     <td className="px-6 py-4 text-slate-500">{s.startTime} - {s.endTime}</td>
                     <td className="px-6 py-4 text-slate-500">{s.room}</td>
+                    <td className="px-6 py-4 text-right">
+                      <button 
+                        onClick={() => handleDeleteSchedule(s.id)}
+                        className="text-slate-300 hover:text-red-500 transition-colors"
+                      >
+                        <Trash2 className="w-5 h-5" />
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -928,6 +1127,9 @@ export default function App() {
             setProfile(snap.data() as UserProfile);
           }
           setLoading(false);
+        }, (error) => {
+          handleFirestoreError(error, OperationType.GET, `users/${firebaseUser.uid}`);
+          setLoading(false);
         });
         return unsubProfile;
       } else {
@@ -944,96 +1146,98 @@ export default function App() {
   const handleLogout = () => signOut(auth);
 
   return (
-    <div className="min-h-screen bg-slate-50 flex">
-      {/* Sidebar */}
-      <aside className={cn(
-        "fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-slate-200 transform transition-transform duration-300 lg:relative lg:translate-x-0",
-        isSidebarOpen ? "translate-x-0" : "-translate-x-full"
-      )}>
-        <div className="h-full flex flex-col p-6">
-          <div className="flex items-center gap-3 mb-10">
-            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-100">
-              <QrCode className="text-white w-6 h-6" />
+    <ErrorBoundary>
+      <div className="min-h-screen bg-slate-50 flex">
+        {/* Sidebar */}
+        <aside className={cn(
+          "fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-slate-200 transform transition-transform duration-300 lg:relative lg:translate-x-0",
+          isSidebarOpen ? "translate-x-0" : "-translate-x-full"
+        )}>
+          <div className="h-full flex flex-col p-6">
+            <div className="flex items-center gap-3 mb-10">
+              <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-100">
+                <QrCode className="text-white w-6 h-6" />
+              </div>
+              <h1 className="text-xl font-bold text-slate-900">EduAttend</h1>
             </div>
-            <h1 className="text-xl font-bold text-slate-900">EduAttend</h1>
+
+            <nav className="flex-1 space-y-2">
+              <button className="w-full flex items-center gap-3 px-4 py-3 bg-blue-50 text-blue-600 rounded-xl font-bold text-sm">
+                <LayoutDashboard className="w-5 h-5" />
+                Dashboard
+              </button>
+              {/* Add more nav items here if needed */}
+            </nav>
+
+            <div className="mt-auto pt-6 border-t border-slate-100">
+              <div className="flex items-center gap-3 mb-6 px-4">
+                <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center">
+                  <User className="text-slate-500 w-5 h-5" />
+                </div>
+                <div className="overflow-hidden">
+                  <p className="text-sm font-bold text-slate-900 truncate">{profile?.name || user.displayName}</p>
+                  <p className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">{profile?.role}</p>
+                </div>
+              </div>
+              <button 
+                onClick={handleLogout}
+                className="w-full flex items-center gap-3 px-4 py-3 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-xl font-bold text-sm transition-all"
+              >
+                <LogOut className="w-5 h-5" />
+                Sign Out
+              </button>
+            </div>
           </div>
+        </aside>
 
-          <nav className="flex-1 space-y-2">
-            <button className="w-full flex items-center gap-3 px-4 py-3 bg-blue-50 text-blue-600 rounded-xl font-bold text-sm">
-              <LayoutDashboard className="w-5 h-5" />
-              Dashboard
-            </button>
-            {/* Add more nav items here if needed */}
-          </nav>
-
-          <div className="mt-auto pt-6 border-t border-slate-100">
-            <div className="flex items-center gap-3 mb-6 px-4">
-              <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center">
-                <User className="text-slate-500 w-5 h-5" />
-              </div>
-              <div className="overflow-hidden">
-                <p className="text-sm font-bold text-slate-900 truncate">{profile?.name || user.displayName}</p>
-                <p className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">{profile?.role}</p>
-              </div>
-            </div>
+        {/* Main Content */}
+        <main className="flex-1 min-w-0 overflow-auto">
+          <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between sticky top-0 z-40">
             <button 
-              onClick={handleLogout}
-              className="w-full flex items-center gap-3 px-4 py-3 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-xl font-bold text-sm transition-all"
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+              className="p-2 text-slate-500 lg:hidden"
             >
-              <LogOut className="w-5 h-5" />
-              Sign Out
+              {isSidebarOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
             </button>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <main className="flex-1 min-w-0 overflow-auto">
-        <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between sticky top-0 z-40">
-          <button 
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="p-2 text-slate-500 lg:hidden"
-          >
-            {isSidebarOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-          </button>
-          <div className="flex-1 lg:ml-0 ml-4">
-            <div className="relative max-w-md">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
-              <input 
-                type="text" 
-                placeholder="Search anything..." 
-                className="w-full bg-slate-50 border-none rounded-xl pl-10 pr-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 transition-all"
-              />
+            <div className="flex-1 lg:ml-0 ml-4">
+              <div className="relative max-w-md">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
+                <input 
+                  type="text" 
+                  placeholder="Search anything..." 
+                  className="w-full bg-slate-50 border-none rounded-xl pl-10 pr-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 transition-all"
+                />
+              </div>
             </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <div className="hidden md:block text-right">
-              <p className="text-xs font-bold text-slate-400 uppercase">{format(new Date(), 'EEEE')}</p>
-              <p className="text-sm font-bold text-slate-900">{format(new Date(), 'MMM dd, yyyy')}</p>
+            <div className="flex items-center gap-4">
+              <div className="hidden md:block text-right">
+                <p className="text-xs font-bold text-slate-400 uppercase">{format(new Date(), 'EEEE')}</p>
+                <p className="text-sm font-bold text-slate-900">{format(new Date(), 'MMM dd, yyyy')}</p>
+              </div>
             </div>
+          </header>
+
+          <div className="p-6 max-w-7xl mx-auto">
+            {profile?.role === 'student' && <StudentDashboard user={profile} />}
+            {profile?.role === 'teacher' && <TeacherDashboard user={profile} />}
+            {profile?.role === 'admin' && <AdminDashboard />}
+            
+            {!profile && !loading && (
+              <div className="text-center py-20">
+                <p className="text-slate-500">Setting up your profile...</p>
+              </div>
+            )}
           </div>
-        </header>
+        </main>
 
-        <div className="p-6 max-w-7xl mx-auto">
-          {profile?.role === 'student' && <StudentDashboard user={profile} />}
-          {profile?.role === 'teacher' && <TeacherDashboard user={profile} />}
-          {profile?.role === 'admin' && <AdminDashboard />}
-          
-          {!profile && !loading && (
-            <div className="text-center py-20">
-              <p className="text-slate-500">Setting up your profile...</p>
-            </div>
-          )}
-        </div>
-      </main>
-
-      {/* Mobile Sidebar Overlay */}
-      {isSidebarOpen && (
-        <div 
-          className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-40 lg:hidden"
-          onClick={() => setIsSidebarOpen(false)}
-        />
-      )}
-    </div>
+        {/* Mobile Sidebar Overlay */}
+        {isSidebarOpen && (
+          <div 
+            className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-40 lg:hidden"
+            onClick={() => setIsSidebarOpen(false)}
+          />
+        )}
+      </div>
+    </ErrorBoundary>
   );
 }
